@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { 
   getUsers, 
@@ -1188,20 +1187,24 @@ if (!process.env.VERCEL) {
 // Vite / static file serving (Only when not running as a Vercel serverless function)
 if (!process.env.VERCEL) {
   if (process.env.NODE_ENV !== 'production') {
-    createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa'
-    }).then((vite) => {
-      app.use(vite.middlewares);
-      
-      // Catch-all to serve index.html for React Router / SPA routing in development
-      app.get('*', (req, res) => {
-        res.sendFile(path.join(process.cwd(), 'index.html'));
-      });
+    import('vite').then(({ createServer: createViteServer }) => {
+      createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa'
+      }).then((vite) => {
+        app.use(vite.middlewares);
+        
+        // Catch-all to serve index.html for React Router / SPA routing in development
+        app.get('*', (req, res) => {
+          res.sendFile(path.join(process.cwd(), 'index.html'));
+        });
 
-      app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server is running in DEVELOPMENT mode at http://0.0.0.0:${PORT}`);
+        app.listen(PORT, '0.0.0.0', () => {
+          console.log(`Server is running in DEVELOPMENT mode at http://0.0.0.0:${PORT}`);
+        });
       });
+    }).catch((err) => {
+      console.error('[Vite Server Init Error]:', err);
     });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
