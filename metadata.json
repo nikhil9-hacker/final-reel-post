@@ -1,0 +1,6 @@
+{
+  "name": "ReelPilot",
+  "description": "Instagram Reel Scheduler that automatically syncs and schedules reels from Google Drive folders using the Meta Graph API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
