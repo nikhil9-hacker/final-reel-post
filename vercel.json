@@ -3,20 +3,11 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/index"
-    },
-    {
-      "handle": "filesystem"
+      "destination": "/api"
     },
     {
       "source": "/(.*)",
       "destination": "/index.html"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/process-schedules",
-      "schedule": "* * * * *"
     }
   ]
 }
