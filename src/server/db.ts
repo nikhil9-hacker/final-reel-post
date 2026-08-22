@@ -37,9 +37,16 @@ export function decrypt(text: string): string {
   }
 }
 
+export interface GoogleOAuthConfig {
+  clientId: string;
+  clientSecret: string;
+  updatedAt: number;
+}
+
 interface DatabaseSchema {
   users: User[];
   metaConfig: MetaConfig | null;
+  googleOAuthConfig?: GoogleOAuthConfig | null;
   driveFolderConfig: DriveFolderConfig | null;
   schedules: Schedule[];
   logs: AuditLog[];
@@ -51,6 +58,7 @@ interface DatabaseSchema {
 const defaultDb: DatabaseSchema = {
   users: [],
   metaConfig: null,
+  googleOAuthConfig: null,
   driveFolderConfig: null,
   schedules: [],
   logs: [],
@@ -193,6 +201,29 @@ export function saveMetaConfig(config: MetaConfig): void {
     appId: encrypt(config.appId),
     appSecret: encrypt(config.appSecret),
     accessToken: encrypt(config.accessToken)
+  };
+  writeDb(db);
+}
+
+// GoogleOAuthConfig CRUD
+export function getGoogleOAuthConfig(): GoogleOAuthConfig | null {
+  const db = readDb();
+  if (!db.googleOAuthConfig) return null;
+  return {
+    ...db.googleOAuthConfig,
+    clientId: decrypt(db.googleOAuthConfig.clientId),
+    clientSecret: decrypt(db.googleOAuthConfig.clientSecret)
+  };
+}
+
+export function saveGoogleOAuthConfig(config: GoogleOAuthConfig): void {
+  const db = readDb();
+  const cleanId = (config.clientId || '').trim().replace(/^["']|["']$/g, '');
+  const cleanSecret = (config.clientSecret || '').trim().replace(/^["']|["']$/g, '');
+  db.googleOAuthConfig = {
+    ...config,
+    clientId: encrypt(cleanId),
+    clientSecret: encrypt(cleanSecret)
   };
   writeDb(db);
 }

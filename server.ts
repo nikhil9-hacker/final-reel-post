@@ -7,6 +7,8 @@ import {
   saveUser, 
   getMetaConfig, 
   saveMetaConfig, 
+  getGoogleOAuthConfig,
+  saveGoogleOAuthConfig,
   getDriveFolderConfig, 
   saveDriveFolderConfig, 
   getSchedules, 
@@ -22,6 +24,7 @@ import {
 } from './src/server/db.js';
 import { 
   getGoogleAuthUrl, 
+  getGoogleOAuthCredentials,
   exchangeCodeForTokens, 
   getUserProfile, 
   listFolders, 
@@ -395,6 +398,45 @@ app.get('/api/auth/token', requireAuth, async (req: any, res) => {
   } catch (err: any) {
     res.status(500).json({ error: `Failed to refresh token: ${err.message}` });
   }
+});
+
+// ==========================================
+// GOOGLE OAUTH CREDENTIALS SETTINGS
+// ==========================================
+
+app.get('/api/settings/google-oauth', (req, res) => {
+  const { clientId, clientSecret } = getGoogleOAuthCredentials();
+  const dbConfig = getGoogleOAuthConfig();
+  res.json({
+    configured: !!(clientId && clientSecret),
+    isCustom: !!(dbConfig?.clientId && dbConfig?.clientSecret),
+    clientId: clientId || '',
+    clientSecretMasked: clientSecret ? (clientSecret.length > 8 ? `${clientSecret.slice(0, 7)}...${clientSecret.slice(-4)}` : '••••••••') : ''
+  });
+});
+
+app.post('/api/settings/google-oauth', (req, res) => {
+  const { clientId, clientSecret } = req.body;
+  if (!clientId || !clientSecret) {
+    res.status(400).json({ error: 'Client ID and Client Secret are required.' });
+    return;
+  }
+  const cleanId = clientId.trim().replace(/^["']|["']$/g, '');
+  const cleanSecret = clientSecret.trim().replace(/^["']|["']$/g, '');
+  
+  saveGoogleOAuthConfig({
+    clientId: cleanId,
+    clientSecret: cleanSecret,
+    updatedAt: Date.now()
+  });
+
+  addLog({
+    action: 'UPDATE_GOOGLE_OAUTH_SETTINGS',
+    status: 'success',
+    apiResponse: `Successfully updated Google OAuth credentials (Client ID: ${cleanId.slice(0, 15)}...)`
+  });
+
+  res.json({ success: true, message: 'Google OAuth credentials saved securely.' });
 });
 
 // ==========================================

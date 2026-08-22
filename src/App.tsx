@@ -180,6 +180,14 @@ export default function App() {
   });
   const [metaVerifyResult, setMetaVerifyResult] = useState<any | null>(null);
 
+  // Google Cloud OAuth Credentials Form
+  const [googleOAuthForm, setGoogleOAuthForm] = useState({
+    clientId: '',
+    clientSecret: ''
+  });
+  const [googleOAuthStatus, setGoogleOAuthStatus] = useState<{ configured: boolean; isCustom: boolean; clientId: string; clientSecretMasked: string } | null>(null);
+  const [isSavingGoogleOAuth, setIsSavingGoogleOAuth] = useState(false);
+
   // Load configuration and data on mount
   useEffect(() => {
     // Check if session ID is provided in query parameters (for direct page redirects)
@@ -462,6 +470,7 @@ export default function App() {
     try {
       await Promise.all([
         fetchMetaConfig(),
+        fetchGoogleOAuthConfig(),
         fetchDriveConfig(),
         fetchSchedules(),
         fetchLogs(),
@@ -471,6 +480,51 @@ export default function App() {
       console.error('Error fetching dashboard data:', err);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const fetchGoogleOAuthConfig = async () => {
+    try {
+      const res = await apiFetch('/api/settings/google-oauth');
+      const data = await res.json();
+      setGoogleOAuthStatus(data);
+      if (data.clientId) {
+        setGoogleOAuthForm(prev => ({
+          ...prev,
+          clientId: data.clientId
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to load Google OAuth config:', err);
+    }
+  };
+
+  const saveGoogleOAuthSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!googleOAuthForm.clientId || !googleOAuthForm.clientSecret) {
+      showNotification('error', 'Both Client ID and Client Secret are required.');
+      return;
+    }
+    setIsSavingGoogleOAuth(true);
+    try {
+      const res = await apiFetch('/api/settings/google-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(googleOAuthForm)
+      });
+      const data = await res.json();
+      if (data.success) {
+        showNotification('success', 'Google Cloud OAuth credentials saved successfully!');
+        setGoogleOAuthForm(prev => ({ ...prev, clientSecret: '' }));
+        await fetchGoogleOAuthConfig();
+        await fetchGoogleUrl();
+      } else {
+        showNotification('error', data.error || 'Failed to save Google OAuth credentials');
+      }
+    } catch (err: any) {
+      showNotification('error', err.message || 'Failed to save Google OAuth credentials');
+    } finally {
+      setIsSavingGoogleOAuth(false);
     }
   };
 
@@ -2832,7 +2886,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {/* 4. META SETTINGS TAB */}
+            {/* 4. META & INTEGRATION SETTINGS TAB */}
             {activeTab === 'meta' && (
               <motion.div
                 key="meta"
@@ -2841,6 +2895,75 @@ export default function App() {
                 exit={{ opacity: 0, y: -15 }}
                 className="space-y-6"
               >
+                {/* Google Cloud Console Credentials Settings Card */}
+                <form onSubmit={saveGoogleOAuthSettings} className="p-6 rounded-2xl border border-zinc-800 bg-zinc-900/50 space-y-4" id="google_oauth_credentials_form">
+                  <div className="border-b border-zinc-800/80 pb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-5 h-5 rounded-md bg-blue-500/10 flex items-center justify-center border border-blue-500/20">
+                          <HardDrive className="w-3 h-3 text-blue-400" />
+                        </div>
+                        <h3 className="font-display font-semibold text-base text-zinc-100">Google Cloud OAuth Credentials</h3>
+                      </div>
+                      <p className="text-xs text-zinc-400 mt-0.5">Manage the Google Cloud Client ID & Secret used for Drive API syncing and login.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {googleOAuthStatus?.isCustom ? (
+                        <span className="text-[10px] font-mono text-emerald-400 uppercase bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20 font-bold">
+                          Custom Saved in DB
+                        </span>
+                      ) : googleOAuthStatus?.configured ? (
+                        <span className="text-[10px] font-mono text-blue-400 uppercase bg-blue-500/10 px-2.5 py-0.5 rounded-full border border-blue-500/20 font-bold">
+                          Default / Env Active
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono text-amber-400 uppercase bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/20 font-bold">
+                          Needs Configuration
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-mono uppercase text-zinc-400 mb-1">Google Client ID</label>
+                      <input
+                        type="text"
+                        value={googleOAuthForm.clientId}
+                        onChange={(e) => setGoogleOAuthForm({ ...googleOAuthForm, clientId: e.target.value })}
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg py-2 px-3 text-xs font-mono focus:outline-none focus:border-blue-500/50 text-zinc-200"
+                        placeholder="e.g. 1060377033502-xxx.apps.googleusercontent.com"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-mono uppercase text-zinc-400 mb-1">Google Client Secret</label>
+                      <input
+                        type="password"
+                        value={googleOAuthForm.clientSecret}
+                        onChange={(e) => setGoogleOAuthForm({ ...googleOAuthForm, clientSecret: e.target.value })}
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg py-2 px-3 text-xs font-mono focus:outline-none focus:border-blue-500/50 text-zinc-200"
+                        placeholder={googleOAuthStatus?.clientSecretMasked ? `Current: ${googleOAuthStatus.clientSecretMasked}` : 'e.g. GOCSPX-xxx'}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-1">
+                    <p className="text-[11px] text-zinc-500">
+                      From Google Cloud Console &rarr; <strong>APIs & Services</strong> &rarr; <strong>Credentials</strong> &rarr; OAuth 2.0 Client IDs.
+                    </p>
+                    <button
+                      type="submit"
+                      disabled={isSavingGoogleOAuth}
+                      className="py-2 px-4 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs rounded-lg transition disabled:opacity-40 cursor-pointer flex items-center gap-1.5 shadow-sm shrink-0"
+                    >
+                      {isSavingGoogleOAuth ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                      Save Google Credentials
+                    </button>
+                  </div>
+                </form>
+
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                   {/* Left Column: Config inputs */}
                   <div className="lg:col-span-7 space-y-6">

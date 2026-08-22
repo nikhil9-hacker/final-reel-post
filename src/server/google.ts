@@ -1,5 +1,5 @@
 import { User } from '../types.js';
-import { saveUser, addLog, getDriveFolderConfig } from './db.js';
+import { saveUser, addLog, getDriveFolderConfig, getGoogleOAuthConfig } from './db.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -35,11 +35,43 @@ if (!fallbackClientId) {
   }
 }
 
-// Google OAuth configuration
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || fallbackClientId || '';
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || fallbackClientSecret || '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';
+/**
+ * Dynamically retrieves clean, sanitized Google OAuth Credentials.
+ * Priority:
+ * 1. Stored custom credentials in database (configured via UI / Settings)
+ * 2. Process environment variables (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
+ * 3. Fallback credentials from google-client-secret.json
+ */
+export function getGoogleOAuthCredentials(): { clientId: string; clientSecret: string } {
+  // 1. Database-saved custom configuration
+  const dbConfig = getGoogleOAuthConfig();
+  if (dbConfig?.clientId && dbConfig?.clientSecret) {
+    return {
+      clientId: dbConfig.clientId.trim().replace(/^["']|["']$/g, ''),
+      clientSecret: dbConfig.clientSecret.trim().replace(/^["']|["']$/g, '')
+    };
+  }
+
+  // 2. Environment variables with whitespace & quotes cleanup
+  const envClientId = (process.env.GOOGLE_CLIENT_ID || '').trim().replace(/^["']|["']$/g, '');
+  const envClientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim().replace(/^["']|["']$/g, '');
+
+  if (envClientId && envClientSecret) {
+    return {
+      clientId: envClientId,
+      clientSecret: envClientSecret
+    };
+  }
+
+  // 3. Fallback credentials
+  return {
+    clientId: envClientId || fallbackClientId || '',
+    clientSecret: envClientSecret || fallbackClientSecret || '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'
+  };
+}
 
 export function getGoogleAuthUrl(redirectUri: string): string {
+  const { clientId } = getGoogleOAuthCredentials();
   const scopes = [
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/drive.file',
@@ -48,7 +80,7 @@ export function getGoogleAuthUrl(redirectUri: string): string {
     'https://www.googleapis.com/auth/userinfo.profile'
   ];
   const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
+    client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
     scope: scopes.join(' '),
@@ -59,13 +91,14 @@ export function getGoogleAuthUrl(redirectUri: string): string {
 }
 
 export async function exchangeCodeForTokens(code: string, redirectUri: string) {
+  const { clientId, clientSecret } = getGoogleOAuthCredentials();
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       code,
-      client_id: GOOGLE_CLIENT_ID,
-      client_secret: GOOGLE_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
     }),
@@ -73,6 +106,13 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string) {
 
   if (!response.ok) {
     const errText = await response.text();
+    let errJson: any = null;
+    try {
+      errJson = JSON.parse(errText);
+    } catch {}
+    if (errJson?.error === 'invalid_client' || errText.includes('client secret is invalid')) {
+      throw new Error(`Google exchange failed: The provided Google Client Secret is invalid. Please check your Google OAuth credentials in Google Cloud Console / Settings.`);
+    }
     throw new Error(`Google exchange failed: ${errText}`);
   }
 
@@ -104,12 +144,13 @@ export async function refreshAccessTokenIfNeeded(user: User, forceRefresh: boole
   });
 
   try {
+    const { clientId, clientSecret } = getGoogleOAuthCredentials();
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
+        client_id: clientId,
+        client_secret: clientSecret,
         refresh_token: user.googleRefreshToken,
         grant_type: 'refresh_token',
       }),
@@ -117,7 +158,12 @@ export async function refreshAccessTokenIfNeeded(user: User, forceRefresh: boole
 
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.error_description || data.error || 'Unknown error');
+      const errMsg = data.error_description || data.error || 'Unknown error';
+      if (data.error === 'invalid_client' || errMsg.includes('client secret is invalid')) {
+        console.warn(`[Google Token Refresh]: Client Secret mismatch for ${user.email}.`);
+        throw new Error(`The provided Google Client Secret is invalid. Please update your Google OAuth credentials in Settings.`);
+      }
+      throw new Error(errMsg);
     }
 
     const updatedUser: User = {
@@ -138,13 +184,18 @@ export async function refreshAccessTokenIfNeeded(user: User, forceRefresh: boole
       apiResponse: 'Google Access Token refreshed successfully.'
     });
 
-    return data.access_token;
+    return updatedUser.googleAccessToken;
   } catch (err: any) {
     addLog({
       action: 'REFRESH_GOOGLE_TOKEN',
       status: 'error',
-      apiResponse: `Failed to refresh Google token: ${err.message}`
+      errorMessage: err.message
     });
+    // Fall back to returning current access token rather than hard crashing if possible
+    if (user.googleAccessToken) {
+      console.warn('Returning cached access token as fallback:', err.message);
+      return user.googleAccessToken;
+    }
     throw err;
   }
 }
