@@ -415,17 +415,42 @@ export function CalendarTab({
           {(() => {
             const todayStr = new Date().toDateString();
             const todayCount = schedules.filter(s => new Date(s.scheduledTime).toDateString() === todayStr).length;
+            const nextPending = schedules
+              .filter(s => s.status === 'pending' || s.status === 'failed')
+              .sort((a, b) => a.scheduledTime - b.scheduledTime)[0];
+
             return (
-              <button
-                type="button"
-                onClick={() => setSelectedDayOverview(new Date())}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 hover:text-blue-200 text-xs font-mono transition cursor-pointer"
-                title="Click to view all reels scheduled for Today"
-              >
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                <span className="font-semibold">Today:</span>
-                <span>{todayCount} {todayCount === 1 ? 'reel' : 'reels'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleToday();
+                    setSelectedDayOverview(new Date());
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 hover:text-blue-200 text-xs font-mono transition cursor-pointer"
+                  title="Click to view all reels scheduled for Today"
+                >
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                  <span className="font-semibold">Today:</span>
+                  <span>{todayCount} {todayCount === 1 ? 'reel' : 'reels'}</span>
+                </button>
+
+                {nextPending && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(nextPending.scheduledTime);
+                      onDateChange(d);
+                      setSelectedDayOverview(d);
+                    }}
+                    className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:text-purple-200 text-xs font-mono transition cursor-pointer"
+                    title={`Jump to next scheduled reel on ${new Date(nextPending.scheduledTime).toLocaleDateString()}`}
+                  >
+                    <Sparkles className="w-3 h-3 text-purple-400" />
+                    <span>Focus Next Reel</span>
+                  </button>
+                )}
+              </div>
             );
           })()}
 

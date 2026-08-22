@@ -111,15 +111,59 @@ export default function App() {
   const [showPassword, setShowPassword] = useState<boolean>(false);
   
   // Database & Content States (Loaded freshly upon authenticated user session)
-  const [metaConfig, setMetaConfig] = useState<MetaConfig | null>(null);
-  const [metaConfigured, setMetaConfigured] = useState<boolean>(false);
-  const [driveConfig, setDriveConfig] = useState<DriveFolderConfig | null>(null);
+  const [metaConfig, setMetaConfig] = useState<MetaConfig | null>(() => {
+    try {
+      const saved = localStorage.getItem('reelpilot_cached_meta_config');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [metaConfigured, setMetaConfigured] = useState<boolean>(() => {
+    return !!localStorage.getItem('reelpilot_cached_meta_config');
+  });
+  const [driveConfig, setDriveConfig] = useState<DriveFolderConfig | null>(() => {
+    try {
+      const saved = localStorage.getItem('reelpilot_cached_drive_config');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [folders, setFolders] = useState<any[]>([]);
   const [manualFolderInput, setManualFolderInput] = useState<string>('');
-  const [syncedVideos, setSyncedVideos] = useState<DriveVideoItem[]>([]);
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
+  const [syncedVideos, setSyncedVideos] = useState<DriveVideoItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('reelpilot_cached_videos');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [schedules, setSchedules] = useState<Schedule[]>(() => {
+    try {
+      const saved = localStorage.getItem('reelpilot_cached_schedules');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [logs, setLogs] = useState<AuditLog[]>(() => {
+    try {
+      const saved = localStorage.getItem('reelpilot_cached_logs');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(() => {
+    try {
+      const saved = localStorage.getItem('reelpilot_cached_stats');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   
   // Loading & Action states
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -148,7 +192,7 @@ export default function App() {
   const [pickerTarget, setPickerTarget] = useState<'single' | 'bulk'>('single');
   const [tempSelectedDate, setTempSelectedDate] = useState<string>('');
   const [tempSelectedTime, setTempSelectedTime] = useState<string>('');
-  const [pickerYearMonth, setPickerYearMonth] = useState<Date>(new Date(2026, 6, 15)); // Match default July 2026 from calendar navigation
+  const [pickerYearMonth, setPickerYearMonth] = useState<Date>(new Date());
   
   // Inline caption editing states
   const [editingCaptionVideoId, setEditingCaptionVideoId] = useState<string | null>(null);
@@ -156,7 +200,7 @@ export default function App() {
   const [isGeneratingCaption, setIsGeneratingCaption] = useState<boolean>(false);
   
   // Calendar Navigation
-  const [currentCalendarDate, setCurrentCalendarDate] = useState<Date>(new Date(2026, 6, 15)); // July 2026 based on metadata
+  const [currentCalendarDate, setCurrentCalendarDate] = useState<Date>(new Date());
   const [calendarView, setCalendarView] = useState<'month' | 'week' | 'day'>('month');
   const [selectedScheduleDetail, setSelectedScheduleDetail] = useState<Schedule | null>(null);
   
@@ -1074,6 +1118,18 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok) {
+        if (data.schedule) {
+          setSchedules(prev => {
+            const nextList = [...prev.filter(s => s.id !== data.schedule.id), data.schedule];
+            try { localStorage.setItem('reelpilot_cached_schedules', JSON.stringify(nextList)); } catch (e) {}
+            return nextList;
+          });
+          setCurrentCalendarDate(new Date(payload.scheduledTime));
+        }
+        // Instantly refresh state from backend
+        fetchSchedules();
+        fetchDashboardStats();
+
         // Trigger high-quality multi-directional confetti bursts
         confetti({
           particleCount: 120,
@@ -1108,8 +1164,6 @@ export default function App() {
           setScheduleRecurrence('single');
           setCustomCaption('');
           setScheduleSuccess(false);
-          fetchSchedules();
-          fetchDashboardStats();
         }, 1800);
       } else {
         showNotification('error', data.error || 'Failed to create schedule.');
@@ -1455,14 +1509,22 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok) {
+        if (data.schedule) {
+          setSchedules(prev => {
+            const nextList = [...prev.filter(s => s.id !== data.schedule.id), data.schedule];
+            try { localStorage.setItem('reelpilot_cached_schedules', JSON.stringify(nextList)); } catch (e) {}
+            return nextList;
+          });
+          setCurrentCalendarDate(new Date(scheduledTimeMs));
+        }
         confetti({
           particleCount: 100,
           spread: 70,
           origin: { y: 0.6 }
         });
         showNotification('success', `Successfully scheduled reel: ${payload.videoFileName}`);
-        await fetchSchedules();
-        await fetchDashboardStats();
+        fetchSchedules();
+        fetchDashboardStats();
       } else {
         showNotification('error', data.error || 'Failed to schedule reel.');
       }

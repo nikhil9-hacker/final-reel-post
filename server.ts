@@ -1232,14 +1232,14 @@ app.get('/api/dashboard/stats', requireAuth, async (req: any, res) => {
     metaConnected: !!metaConfig,
     selectedFolderName: driveConfig?.selectedFolderName || '',
     videosAvailableCount: videosCount,
-    scheduledCount: schedules.filter(s => s.status === 'pending').length,
+    scheduledCount: schedules.filter(s => s.status === 'pending' || s.status === 'publishing').length,
     publishedTodayCount: schedules.filter(s => s.status === 'published' && s.publishedAt && s.publishedAt >= todayStart.getTime()).length,
     publishedThisWeekCount: schedules.filter(s => s.status === 'published' && s.publishedAt && s.publishedAt >= weekStart.getTime()).length,
     failedCount: schedules.filter(s => s.status === 'failed').length,
     upcomingSchedules: schedules
-      .filter(s => s.status === 'pending')
+      .filter(s => s.status === 'pending' || s.status === 'failed' || s.status === 'publishing')
       .sort((a, b) => a.scheduledTime - b.scheduledTime)
-      .slice(0, 5),
+      .slice(0, 20),
     rateLimits: getRateLimits(),
     systemHealth: getDetailedSystemHealth()
   };
