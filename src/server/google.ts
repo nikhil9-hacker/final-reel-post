@@ -66,8 +66,13 @@ export function getGoogleOAuthCredentials(): { clientId: string; clientSecret: s
   // 3. Fallback credentials
   return {
     clientId: envClientId || fallbackClientId || '',
-    clientSecret: envClientSecret || fallbackClientSecret || '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'
+    clientSecret: envClientSecret || fallbackClientSecret || ''
   };
+}
+
+export function hasConfiguredGoogleOAuthSecret(): boolean {
+  const { clientId, clientSecret } = getGoogleOAuthCredentials();
+  return Boolean(clientId && clientSecret);
 }
 
 export function getGoogleAuthUrl(redirectUri: string): string {
@@ -92,6 +97,9 @@ export function getGoogleAuthUrl(redirectUri: string): string {
 
 export async function exchangeCodeForTokens(code: string, redirectUri: string) {
   const { clientId, clientSecret } = getGoogleOAuthCredentials();
+  if (!clientSecret) {
+    throw new Error('Google OAuth Client Secret is not configured. Please use Firebase Google Sign-In or configure your Google Client Secret in Settings.');
+  }
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

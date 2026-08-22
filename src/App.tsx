@@ -397,56 +397,60 @@ export default function App() {
     }
   };
 
-  const loginWithGoogle = async (useRedirect = false) => {
+  const reconnectGoogleDrive = async () => {
     setAuthLoading(true);
-    let targetAuthUrl = googleAuthUrl;
     try {
-      const res = await apiFetch('/api/auth/google/url');
-      if (res.ok) {
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const googleAccessToken = credential?.accessToken;
+
+      if (googleAccessToken) {
+        const res = await apiFetch('/api/auth/firebase-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            uid: result.user.uid,
+            email: result.user.email,
+            displayName: result.user.displayName,
+            photoURL: result.user.photoURL,
+            googleAccessToken
+          })
+        });
         const data = await res.json();
-        if (data?.url) {
-          targetAuthUrl = data.url;
-          setGoogleAuthUrl(data.url);
+        if (data.sessionId) {
+          localStorage.setItem('reelpilot_session_id', data.sessionId);
         }
-      }
-    } catch (e) {
-      console.warn('Failed to fetch Google auth URL:', e);
-    }
-
-    if (useRedirect && targetAuthUrl) {
-      window.location.href = targetAuthUrl;
-      return;
-    }
-
-    if (targetAuthUrl) {
-      const width = 600;
-      const height = 700;
-      const left = window.screen.width / 2 - width / 2;
-      const top = window.screen.height / 2 - height / 2;
-      const popup = window.open(
-        targetAuthUrl,
-        'google_oauth_popup',
-        `width=${width},height=${height},left=${left},top=${top},status=0,menubar=0,toolbar=0`
-      );
-
-      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
-        console.log('Popup blocked by browser, redirecting directly to Google Auth URL');
-        window.location.href = targetAuthUrl;
+        setDriveAuthExpired(false);
+        showNotification('success', 'Google Drive re-authenticated! Syncing your videos...');
+        await loadAllData();
+        await syncFolderFiles(true);
       } else {
-        showNotification('info', 'Opening Google Sign-In popup window...');
-        setAuthLoading(false);
+        showNotification('error', 'Google did not return an access token. Please ensure you approved permissions.');
       }
-      return;
+    } catch (err: any) {
+      console.warn('Re-auth error:', err);
+      if (err?.code === 'auth/popup-closed-by-user') {
+        showNotification('info', 'Re-authentication cancelled.');
+      } else if (err?.code === 'auth/popup-blocked') {
+        showNotification('error', 'Popup blocked by browser. Please allow popups for this app.');
+      } else {
+        showNotification('error', err.message || 'Failed to re-authenticate Google Drive.');
+      }
+    } finally {
+      setAuthLoading(false);
     }
+  };
 
-    // Fallback: Firebase popup
+  const loginWithGoogle = async () => {
+    setAuthLoading(true);
     try {
+      // 1. Direct Firebase Google Sign-In Popup with Google Drive Scopes
       const result = await signInWithPopup(auth, googleProvider);
       const firebaseUser = result.user;
       const credential = GoogleAuthProvider.credentialFromResult(result);
       const googleAccessToken = credential?.accessToken;
 
-      // Sync Firebase credentials with server session
+      // 2. Sync Firebase credentials with server session
       try {
         const fbRes = await apiFetch('/api/auth/firebase-login', {
           method: 'POST',
@@ -477,13 +481,17 @@ export default function App() {
       setDriveAuthExpired(false);
       localStorage.setItem('reelpilot_cached_user', JSON.stringify(u));
       showNotification('success', `Welcome back, ${firebaseUser.displayName || firebaseUser.email}!`);
-      setAuthLoading(false);
+      loadAllData();
     } catch (firebaseErr: any) {
+      console.warn('Firebase sign in error:', firebaseErr);
       if (firebaseErr?.code === 'auth/popup-closed-by-user') {
-        showNotification('error', 'Sign-in cancelled by user.');
+        showNotification('info', 'Sign-in cancelled.');
+      } else if (firebaseErr?.code === 'auth/popup-blocked') {
+        showNotification('error', 'Sign-in popup was blocked by your browser. Please allow popups for this site.');
       } else {
-        showNotification('error', firebaseErr?.message || 'Google sign in failed.');
+        showNotification('error', firebaseErr?.message || 'Google sign-in failed.');
       }
+    } finally {
       setAuthLoading(false);
     }
   };
@@ -1736,7 +1744,7 @@ export default function App() {
             <button
               type="button"
               disabled={authLoading}
-              onClick={() => loginWithGoogle(false)}
+              onClick={() => loginWithGoogle()}
               className={`w-full py-3.5 px-4 bg-white hover:bg-zinc-100 text-zinc-950 text-sm font-semibold rounded-xl transition duration-200 cursor-pointer flex items-center justify-center gap-3 shadow-md hover:shadow-lg hover:shadow-white/5 active:scale-[0.99] font-sans ${
                 authLoading ? 'opacity-85 cursor-not-allowed' : ''
               }`}
@@ -1772,35 +1780,36 @@ export default function App() {
 
             <div className="flex flex-col items-center gap-2 pt-1">
               <span className="text-[11px] text-zinc-500 font-sans">
-                Secure single sign-on using Google OAuth
+                Secure single sign-on with Google Drive permissions
               </span>
-              
-              <button
-                type="button"
-                onClick={() => loginWithGoogle(true)}
-                className="text-[11px] text-blue-400 hover:text-blue-300 transition duration-150 cursor-pointer font-sans underline"
-              >
-                Problems with popups? Continue with direct redirect
-              </button>
             </div>
 
-            {/* Google OAuth Verification Guide */}
-            <div className="text-left bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 mt-6" id="google_unverified_guide">
+            {/* Google OAuth Verification & 403 Access Guide */}
+            <div className="text-left bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 mt-6 space-y-3" id="google_unverified_guide">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <div>
                   <h4 className="text-xs font-semibold text-amber-300 font-sans mb-1">
-                    Google "Unverified App" Warning?
+                    Encountering "403: Access Denied / Not authorized"?
                   </h4>
                   <p className="text-[11px] text-zinc-400 leading-normal font-sans">
-                    Since this is a development application, Google will show a safety warning. <strong>This is completely safe and expected!</strong>
+                    Because your Google Cloud OAuth Consent Screen is in <strong>Testing mode</strong>, Google blocks accounts that haven't been added to the test users list.
                   </p>
-                  <ul className="list-decimal list-inside text-[11px] text-zinc-400 mt-2 space-y-1 font-sans">
-                    <li>Click <span className="text-zinc-200 font-medium">"Advanced"</span> (on the bottom left of the Google warning popup)</li>
-                    <li>Click <span className="text-zinc-200 font-medium">"Go to gen-lang-client-... (unsafe)"</span> at the bottom</li>
-                    <li>Grant Google Drive permissions to let ReelPilot access and sync your videos</li>
-                  </ul>
+                  <div className="mt-2 text-[11px] text-zinc-300 bg-black/40 p-2.5 rounded-lg border border-amber-500/20 space-y-1 font-sans">
+                    <p className="font-medium text-amber-200">How to allow your email:</p>
+                    <ol className="list-decimal list-inside space-y-0.5 text-zinc-400">
+                      <li>Go to <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noreferrer" className="text-blue-400 underline hover:text-blue-300">Google Cloud Console &gt; OAuth consent screen</a></li>
+                      <li>Scroll down to <strong>"Test users"</strong> and click <strong>"+ ADD USERS"</strong></li>
+                      <li>Add your Google account email (e.g. <code>{gmailEmail || 'your-email@gmail.com'}</code>) and click <strong>Save</strong></li>
+                      <li>Or switch your app Publishing status to <strong>"In Production"</strong> to let any Google account sign in.</li>
+                    </ol>
+                  </div>
                 </div>
+              </div>
+
+              <div className="pt-2 border-t border-amber-500/10 text-[11px] text-zinc-400">
+                <span className="text-amber-300 font-medium block mb-0.5">Google "Unverified App" Warning?</span>
+                Click <span className="text-zinc-200 font-medium">Advanced</span> &gt; <span className="text-zinc-200 font-medium">Go to project (unsafe)</span> to approve Google Drive access.
               </div>
             </div>
           </div>
@@ -2010,6 +2019,32 @@ export default function App() {
                 exit={{ opacity: 0, y: -15 }}
                 className="space-y-8"
               >
+                {/* Google Drive Re-auth Notice if token expired */}
+                {driveAuthExpired && (
+                  <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4" id="dashboard_drive_reauth_alert">
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                        <AlertTriangle className="w-5 h-5 text-amber-400" />
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-sm text-amber-200">Google Drive Session Requires Authorization</h4>
+                        <p className="text-xs text-zinc-400 mt-0.5">
+                          Your Google Drive access token expired or needs fresh permissions to sync videos and captions.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={reconnectGoogleDrive}
+                      disabled={authLoading}
+                      className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold rounded-xl transition duration-150 flex items-center gap-2 shrink-0 cursor-pointer shadow-md active:scale-95"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${authLoading ? 'animate-spin' : ''}`} />
+                      {authLoading ? 'Authorizing...' : '⚡ Re-authenticate Google Drive'}
+                    </button>
+                  </div>
+                )}
+
                 {/* Onboarding Banner if setup is missing */}
                 {(!driveConfig || !metaConfigured) && (
                   <div className="p-5 rounded-2xl bg-gradient-to-r from-blue-950/20 via-zinc-900 to-blue-950/10 border border-blue-500/20 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -2585,7 +2620,7 @@ export default function App() {
                               </div>
                             </div>
                             <button
-                              onClick={() => loginWithGoogle(false)}
+                              onClick={() => reconnectGoogleDrive()}
                               disabled={authLoading}
                               className="w-full py-2 px-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg transition duration-150 flex items-center justify-center gap-1.5 cursor-pointer"
                             >
