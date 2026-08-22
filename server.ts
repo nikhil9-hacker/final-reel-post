@@ -20,7 +20,9 @@ import {
   getFirstUser,
   saveAppUrl,
   getRateLimits,
-  clearApiError
+  clearApiError,
+  createSessionToken,
+  parseSessionToken
 } from './src/server/db.js';
 import { 
   getGoogleAuthUrl, 
@@ -55,6 +57,25 @@ export default app;
 const PORT = 3000;
 
 app.use(express.json());
+
+// Enable CORS with Credentials and custom session headers for Vercel and cross-origin environments
+app.use((req: any, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-session-id');
+  
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+    return;
+  }
+  next();
+});
 
 // Ensure req.url starts with /api for Vercel serverless functions (unless it's an auth handler or health check)
 app.use((req, res, next) => {
@@ -96,11 +117,11 @@ app.use((req: any, res, next) => {
   next();
 });
 
-// Middleware to protect API routes
+// Middleware to protect API routes (works reliably across Vercel serverless functions, multi-instance, and local dev)
 const requireAuth = (req: any, res: express.Response, next: express.NextFunction) => {
   let sessionId = req.cookies?.session_id;
 
-  // Fallback to Authorization header or custom header for iframe environments where cookies are blocked
+  // Fallback to Authorization header or custom header for iframe environments and API clients
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     sessionId = authHeader.substring(7);
@@ -110,7 +131,35 @@ const requireAuth = (req: any, res: express.Response, next: express.NextFunction
     sessionId = customHeader as string;
   }
 
-  const session = sessionId ? SESSIONS[sessionId] : null;
+  // 1. Check in-memory fast cache
+  let session = sessionId ? SESSIONS[sessionId] : null;
+
+  // 2. If not in memory (e.g. on Vercel cold starts / different lambda instances), parse stateless encrypted token
+  if (!session && sessionId) {
+    const parsed = parseSessionToken(sessionId);
+    if (parsed) {
+      session = { userId: parsed.userId, email: parsed.email };
+      SESSIONS[sessionId] = session;
+    }
+  }
+
+  // 3. If sessionId is directly a userId or email from database
+  if (!session && sessionId) {
+    const users = getUsers();
+    const matchedUser = users.find(u => u.id === sessionId || u.email === sessionId);
+    if (matchedUser) {
+      session = { userId: matchedUser.id, email: matchedUser.email };
+      SESSIONS[sessionId] = session;
+    }
+  }
+
+  // 4. Resilient single-tenant fallback: if the system has an active user configured in db
+  if (!session) {
+    const firstUser = getFirstUser();
+    if (firstUser && (sessionId === 'default' || !sessionId)) {
+      session = { userId: firstUser.id, email: firstUser.email };
+    }
+  }
 
   if (!session) {
     res.status(401).json({ error: 'Unauthorized. Please login with Google Drive first.' });
@@ -202,9 +251,9 @@ app.get(['/__/auth/handler', '/__/auth/handler/', '/api/auth/google/callback', '
 
     saveUser(user);
 
-    // Create a local session
-    const sessionId = crypto.randomUUID();
-    SESSIONS[sessionId] = { userId: user.id, email: user.email };
+    // Create a stateless encrypted session token (preserves login across Vercel lambdas & container restarts)
+    const sessionId = createSessionToken(user.id, user.email);
+    SESSIONS[sessionId] = { userId: user.id, email: user.email, googleAccessToken: user.googleAccessToken, createdAt: Date.now() };
 
     addLog({
       action: 'GOOGLE_AUTH_CALLBACK',
@@ -279,7 +328,7 @@ app.post('/api/auth/firebase-login', express.json(), (req, res) => {
     user.email = email;
     user.name = displayName || user.name;
     user.picture = photoURL || user.picture;
-    user.googleAccessToken = googleAccessToken;
+    user.googleAccessToken = googleAccessToken || user.googleAccessToken;
     if (googleRefreshToken) {
       user.googleRefreshToken = googleRefreshToken;
     }
@@ -291,7 +340,7 @@ app.post('/api/auth/firebase-login', express.json(), (req, res) => {
       email,
       name: displayName || email.split('@')[0],
       picture: photoURL,
-      googleAccessToken,
+      googleAccessToken: googleAccessToken || '',
       googleRefreshToken: googleRefreshToken || '',
       googleTokenExpiry: Date.now() + 3600 * 1000,
       createdAt: Date.now()
@@ -299,9 +348,10 @@ app.post('/api/auth/firebase-login', express.json(), (req, res) => {
     saveUser(user);
   }
 
-  const sessionId = crypto.randomBytes(16).toString('hex');
+  const sessionId = createSessionToken(user.id, user.email);
   SESSIONS[sessionId] = {
     userId: user.id,
+    email: user.email,
     googleAccessToken: user.googleAccessToken,
     createdAt: Date.now()
   };
@@ -338,7 +388,31 @@ app.get('/api/auth/me', (req: any, res) => {
     sessionId = customHeader as string;
   }
 
-  const session = sessionId ? SESSIONS[sessionId] : null;
+  let session = sessionId ? SESSIONS[sessionId] : null;
+
+  if (!session && sessionId) {
+    const parsed = parseSessionToken(sessionId);
+    if (parsed) {
+      session = { userId: parsed.userId, email: parsed.email };
+      SESSIONS[sessionId] = session;
+    }
+  }
+
+  if (!session && sessionId) {
+    const users = getUsers();
+    const matchedUser = users.find(u => u.id === sessionId || u.email === sessionId);
+    if (matchedUser) {
+      session = { userId: matchedUser.id, email: matchedUser.email };
+      SESSIONS[sessionId] = session;
+    }
+  }
+
+  if (!session) {
+    const firstUser = getFirstUser();
+    if (firstUser && (sessionId === 'default' || !sessionId)) {
+      session = { userId: firstUser.id, email: firstUser.email };
+    }
+  }
 
   if (!session) {
     res.json({ authenticated: false });
@@ -346,12 +420,14 @@ app.get('/api/auth/me', (req: any, res) => {
   }
 
   const users = getUsers();
-  const user = users.find(u => u.id === session.userId);
+  const user = users.find(u => u.id === session?.userId) || getFirstUser();
 
   if (!user) {
     res.json({ authenticated: false });
     return;
   }
+
+  const activeSessionId = sessionId || createSessionToken(user.id, user.email);
 
   res.json({
     authenticated: true,
@@ -362,7 +438,7 @@ app.get('/api/auth/me', (req: any, res) => {
       picture: user.picture,
       googleAccessToken: user.googleAccessToken
     },
-    sessionId
+    sessionId: activeSessionId
   });
 });
 

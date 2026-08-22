@@ -37,6 +37,32 @@ export function decrypt(text: string): string {
   }
 }
 
+// Stateless Encrypted Session Token Helpers (immune to serverless cold starts & multi-instance environments like Vercel)
+export function createSessionToken(userId: string, email?: string): string {
+  const payload = JSON.stringify({
+    userId,
+    email: email || '',
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    rnd: crypto.randomBytes(8).toString('hex')
+  });
+  return encrypt(payload);
+}
+
+export function parseSessionToken(token: string): { userId: string; email?: string } | null {
+  if (!token) return null;
+  try {
+    const decrypted = decrypt(token);
+    if (!decrypted) return null;
+    const data = JSON.parse(decrypted);
+    if (data && data.userId && (!data.exp || data.exp > Date.now())) {
+      return { userId: data.userId, email: data.email };
+    }
+  } catch (err) {
+    // Token is not an encrypted JSON string (might be a direct legacy ID or unencrypted string)
+  }
+  return null;
+}
+
 export interface GoogleOAuthConfig {
   clientId: string;
   clientSecret: string;
