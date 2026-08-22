@@ -52,9 +52,15 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Ensure req.url starts with /api for Vercel serverless functions
+// Ensure req.url starts with /api for Vercel serverless functions (unless it's an auth handler or health check)
 app.use((req, res, next) => {
-  if (process.env.VERCEL && !req.url.startsWith('/api') && !req.url.startsWith('/health')) {
+  if (
+    process.env.VERCEL && 
+    !req.url.startsWith('/api') && 
+    !req.url.startsWith('/health') && 
+    !req.url.startsWith('/__/') &&
+    !req.url.startsWith('/auth')
+  ) {
     req.url = '/api' + (req.url.startsWith('/') ? '' : '/') + req.url;
   }
   next();
@@ -144,7 +150,7 @@ app.get('/api/auth/google/url', (req, res) => {
   }
 });
 
-app.get(['/__/auth/handler', '/__/auth/handler/'], async (req: any, res) => {
+app.get(['/__/auth/handler', '/__/auth/handler/', '/api/auth/google/callback', '/auth/callback'], async (req: any, res) => {
   const code = req.query.code as string;
   const redirectUri = getDynamicRedirectUri(req);
 

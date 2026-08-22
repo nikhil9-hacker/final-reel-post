@@ -6,6 +6,14 @@
       "destination": "/api"
     },
     {
+      "source": "/__/auth/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/auth/(.*)",
+      "destination": "/api"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
