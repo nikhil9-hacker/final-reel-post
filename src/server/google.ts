@@ -133,8 +133,15 @@ export async function getUserProfile(accessToken: string) {
 
 export async function refreshAccessTokenIfNeeded(user: User, forceRefresh: boolean = false): Promise<string> {
   const isExpired = forceRefresh || (Date.now() >= user.googleTokenExpiry - 60000); // 1 min buffer
-  if (!isExpired) {
+  if (!isExpired && user.googleAccessToken) {
     return user.googleAccessToken;
+  }
+
+  if (!user.googleRefreshToken) {
+    if (user.googleAccessToken) {
+      return user.googleAccessToken;
+    }
+    throw new Error('No Google refresh token available. Please reconnect Google Drive.');
   }
 
   addLog({
@@ -200,6 +207,45 @@ export async function refreshAccessTokenIfNeeded(user: User, forceRefresh: boole
   }
 }
 
+function parseDriveApiError(errText: string, actionName: string): string {
+  try {
+    const json = JSON.parse(errText);
+    if (json.error) {
+      if (json.error.status === 'PERMISSION_DENIED' || json.error.message?.includes('unregistered callers')) {
+        return `Google Drive API is not enabled in Google Cloud Console or caller identity is unauthorized. Please verify Google Drive API is ENABLED in Google Cloud project.`;
+      }
+      if (json.error.code === 401 || json.error.message?.includes('authError') || json.error.errors?.some((e: any) => e.reason === 'authError')) {
+        return `Google Drive session expired or unauthorized. Please re-authenticate your Google Drive in Dashboard.`;
+      }
+      if (json.error.message) {
+        return `${actionName}: ${json.error.message}`;
+      }
+    }
+  } catch {}
+  return `${actionName}: ${errText}`;
+}
+
+export async function getTokenInfo(accessToken: string): Promise<{ scopes: string[]; email?: string; expiresIn?: number; valid: boolean; error?: string }> {
+  try {
+    const res = await fetch(`https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${accessToken}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      return { scopes: [], valid: false, error: errText };
+    }
+    const data = await res.json();
+    const scopeStr: string = data.scope || '';
+    const scopes = scopeStr.split(/\s+/).filter(Boolean);
+    return {
+      scopes,
+      email: data.email,
+      expiresIn: data.expires_in,
+      valid: true
+    };
+  } catch (err: any) {
+    return { scopes: [], valid: false, error: err.message };
+  }
+}
+
 // Drive integration
 export async function listFolders(accessToken: string) {
   const q = "mimeType = 'application/vnd.google-apps.folder' and trashed = false";
@@ -218,7 +264,7 @@ export async function listFolders(accessToken: string) {
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Failed to list folders: ${errText}`);
+    throw new Error(parseDriveApiError(errText, 'Failed to list folders'));
   }
 
   const data = await response.json();
@@ -268,7 +314,7 @@ export async function syncDriveFolder(accessToken: string, folderId: string): Pr
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Failed to list files in folder: ${errText}`);
+    throw new Error(parseDriveApiError(errText, 'Failed to list files in folder'));
   }
 
   const data = await response.json();

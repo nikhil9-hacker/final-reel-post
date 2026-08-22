@@ -32,7 +32,8 @@ import {
   Gauge,
   Edit2,
   X,
-  Activity
+  Activity,
+  ShieldCheck
 } from 'lucide-react';
 import { User as UserType, MetaConfig, DriveFolderConfig, Schedule, AuditLog, DashboardStats, DriveVideoItem, SystemHealth } from './types.js';
 import { auth, googleProvider, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from './firebase.js';
@@ -187,6 +188,8 @@ export default function App() {
   });
   const [googleOAuthStatus, setGoogleOAuthStatus] = useState<{ configured: boolean; isCustom: boolean; clientId: string; clientSecretMasked: string } | null>(null);
   const [isSavingGoogleOAuth, setIsSavingGoogleOAuth] = useState(false);
+  const [googleTokenInfo, setGoogleTokenInfo] = useState<{ valid: boolean; email?: string; scopes?: string[]; hasDriveScope?: boolean; expiresIn?: number; error?: string } | null>(null);
+  const [isCheckingTokenInfo, setIsCheckingTokenInfo] = useState(false);
 
   // Load configuration and data on mount
   useEffect(() => {
@@ -563,6 +566,19 @@ export default function App() {
     fetchGoogleFolders();
   };
 
+  const fetchGoogleTokenInfo = async () => {
+    setIsCheckingTokenInfo(true);
+    try {
+      const res = await apiFetch('/api/drive/token-info');
+      const data = await res.json();
+      setGoogleTokenInfo(data);
+    } catch (err: any) {
+      console.warn('Failed to fetch Google token info:', err);
+    } finally {
+      setIsCheckingTokenInfo(false);
+    }
+  };
+
   const fetchGoogleFolders = async () => {
     try {
       const res = await apiFetch('/api/drive/folders');
@@ -570,6 +586,7 @@ export default function App() {
       if (data.folders) {
         setFolders(data.folders);
       }
+      fetchGoogleTokenInfo();
     } catch (err) {
       console.error('Failed to load folders:', err);
     }
@@ -2455,6 +2472,59 @@ export default function App() {
                         <p className="text-xs text-zinc-400 leading-relaxed">
                           Pilot reads files dynamically. Select the target folder inside your Google Drive. We'll scan and auto-pair matching video (e.g. <code>.mp4</code>) and caption (<code>.txt</code>) file couples.
                         </p>
+
+                        {/* Token Diagnostics & Scopes Indicator */}
+                        <div className="p-3.5 rounded-xl bg-zinc-950/60 border border-zinc-800 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-mono uppercase text-zinc-500 font-bold flex items-center gap-1.5">
+                              <ShieldCheck className="w-3 h-3 text-blue-400" /> OAuth Scopes & Token
+                            </span>
+                            <button
+                              type="button"
+                              onClick={fetchGoogleTokenInfo}
+                              disabled={isCheckingTokenInfo}
+                              className="text-[10px] font-mono text-zinc-400 hover:text-zinc-200 flex items-center gap-1 cursor-pointer"
+                            >
+                              <RefreshCw className={`w-2.5 h-2.5 ${isCheckingTokenInfo ? 'animate-spin' : ''}`} /> Verify
+                            </button>
+                          </div>
+
+                          {googleTokenInfo ? (
+                            <div className="space-y-1.5 text-[11px]">
+                              <div className="flex items-center justify-between">
+                                <span className="text-zinc-400 font-mono">Drive Access:</span>
+                                {googleTokenInfo.hasDriveScope ? (
+                                  <span className="text-emerald-400 font-bold font-mono flex items-center gap-1">
+                                    <CheckCircle2 className="w-3 h-3" /> Enabled (Full/Readonly)
+                                  </span>
+                                ) : (
+                                  <span className="text-amber-400 font-bold font-mono flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3" /> Missing Drive Scope
+                                  </span>
+                                )}
+                              </div>
+                              {googleTokenInfo.scopes && googleTokenInfo.scopes.length > 0 && (
+                                <div className="pt-1">
+                                  <span className="text-[9px] font-mono text-zinc-500 uppercase block mb-1">Active Scopes:</span>
+                                  <div className="flex flex-wrap gap-1">
+                                    {googleTokenInfo.scopes.map((s, idx) => {
+                                      const shortScope = s.replace('https://www.googleapis.com/auth/', '');
+                                      return (
+                                        <span key={idx} className="text-[9px] font-mono bg-zinc-900 border border-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded">
+                                          {shortScope}
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-[11px] text-zinc-500 font-mono">
+                              Click Verify to inspect granted token permissions.
+                            </p>
+                          )}
+                        </div>
 
                         <div className="pt-2">
                           <button

@@ -33,7 +33,8 @@ import {
   refreshAccessTokenIfNeeded,
   findOrCreateReelsFolder,
   findDriveFile,
-  getFileThumbnail
+  getFileThumbnail,
+  getTokenInfo
 } from './src/server/google.js';
 import { verifyMetaConnection, uploadReelContainer } from './src/server/meta.js';
 import { 
@@ -585,6 +586,35 @@ app.post('/api/meta/refresh-token', requireAuth, async (req, res) => {
 // GOOGLE DRIVE INTEGRATION ROUTES
 // ==========================================
 
+app.get('/api/drive/token-info', requireAuth, async (req: any, res) => {
+  const users = getUsers();
+  const user = users.find(u => u.id === req.userSession.userId);
+  if (!user || !user.googleAccessToken) {
+    res.status(401).json({ valid: false, error: 'User is not connected to Google Drive.' });
+    return;
+  }
+
+  try {
+    const token = await refreshAccessTokenIfNeeded(user);
+    const info = await getTokenInfo(token);
+    const hasDriveScope = info.scopes.some(s => 
+      s.includes('auth/drive') || 
+      s.includes('auth/drive.readonly') || 
+      s.includes('auth/drive.file')
+    );
+    res.json({
+      valid: info.valid,
+      email: info.email || user.email,
+      expiresIn: info.expiresIn,
+      scopes: info.scopes,
+      hasDriveScope,
+      error: info.error
+    });
+  } catch (err: any) {
+    res.status(500).json({ valid: false, error: err.message });
+  }
+});
+
 app.get('/api/drive/folders', requireAuth, async (req: any, res) => {
   const users = getUsers();
   const user = users.find(u => u.id === req.userSession.userId);
@@ -1095,13 +1125,13 @@ app.get('/api/dashboard/stats', requireAuth, async (req: any, res) => {
   const schedules = getSchedules();
 
   let videosCount = 0;
-  if (user && driveConfig) {
+  if (user && driveConfig?.selectedFolderId) {
     try {
       const googleToken = await refreshAccessTokenIfNeeded(user);
       const result = await syncDriveFolder(googleToken, driveConfig.selectedFolderId);
       videosCount = result.videos.length;
-    } catch (err) {
-      console.error('Failed to count videos from Drive folder in stats:', err);
+    } catch (err: any) {
+      console.warn('[Stats Sync]: Could not sync video count from Drive:', err?.message || err);
     }
   }
 
