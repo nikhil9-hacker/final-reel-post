@@ -211,14 +211,25 @@ function parseDriveApiError(errText: string, actionName: string): string {
   try {
     const json = JSON.parse(errText);
     if (json.error) {
-      if (json.error.status === 'PERMISSION_DENIED' || json.error.message?.includes('unregistered callers')) {
-        return `Google Drive API is not enabled in Google Cloud Console or caller identity is unauthorized. Please verify Google Drive API is ENABLED in Google Cloud project.`;
+      const msg = json.error.message || '';
+      const status = json.error.status || '';
+      const code = json.error.code;
+      const reasons = (json.error.errors || []).map((e: any) => e.reason).join(' ');
+
+      if (status === 'PERMISSION_DENIED' || msg.includes('unregistered callers') || reasons.includes('accessNotConfigured') || msg.includes('API has not been used')) {
+        return `Google Drive API is not enabled in your Google Cloud project. Please enable 'Google Drive API' in Google Cloud Console (APIs & Services > Library).`;
       }
-      if (json.error.code === 401 || json.error.message?.includes('authError') || json.error.errors?.some((e: any) => e.reason === 'authError')) {
+      if (code === 403 || reasons.includes('insufficientPermissions') || msg.includes('insufficient authentication scopes')) {
+        return `Google Drive permission denied (403). The granted token is missing Drive read/write scopes. Please disconnect and reconnect Google Drive with all requested permissions checked.`;
+      }
+      if (code === 401 || reasons.includes('authError') || msg.includes('Invalid Credentials') || msg.includes('authError')) {
         return `Google Drive session expired or unauthorized. Please re-authenticate your Google Drive in Dashboard.`;
       }
-      if (json.error.message) {
-        return `${actionName}: ${json.error.message}`;
+      if (reasons.includes('rateLimitExceeded') || reasons.includes('userRateLimitExceeded')) {
+        return `Google Drive rate limit reached. Please wait a few moments before syncing again.`;
+      }
+      if (msg) {
+        return `${actionName}: ${msg}`;
       }
     }
   } catch {}
@@ -424,7 +435,7 @@ export async function getFileThumbnail(accessToken: string, fileId: string): Pro
 }
 
 async function downloadTextFile(accessToken: string, fileId: string): Promise<string> {
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
@@ -440,7 +451,7 @@ export async function downloadFileStream(accessToken: string, fileId: string, ra
   if (rangeHeader) {
     headers['Range'] = rangeHeader;
   }
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
     headers,
   });
 

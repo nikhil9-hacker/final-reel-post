@@ -117,7 +117,7 @@ app.use((req: any, res, next) => {
   next();
 });
 
-// Middleware to protect API routes (works reliably across Vercel serverless functions, multi-instance, and local dev)
+// Middleware to protect API routes (strictly isolated per user/session)
 const requireAuth = (req: any, res: express.Response, next: express.NextFunction) => {
   let sessionId = req.cookies?.session_id;
 
@@ -150,14 +150,6 @@ const requireAuth = (req: any, res: express.Response, next: express.NextFunction
     if (matchedUser) {
       session = { userId: matchedUser.id, email: matchedUser.email };
       SESSIONS[sessionId] = session;
-    }
-  }
-
-  // 4. Resilient single-tenant fallback: if the system has an active user configured in db
-  if (!session) {
-    const firstUser = getFirstUser();
-    if (firstUser && (sessionId === 'default' || !sessionId)) {
-      session = { userId: firstUser.id, email: firstUser.email };
     }
   }
 
@@ -408,19 +400,12 @@ app.get('/api/auth/me', (req: any, res) => {
   }
 
   if (!session) {
-    const firstUser = getFirstUser();
-    if (firstUser && (sessionId === 'default' || !sessionId)) {
-      session = { userId: firstUser.id, email: firstUser.email };
-    }
-  }
-
-  if (!session) {
     res.json({ authenticated: false });
     return;
   }
 
   const users = getUsers();
-  const user = users.find(u => u.id === session?.userId) || getFirstUser();
+  const user = users.find(u => u.id === session?.userId);
 
   if (!user) {
     res.json({ authenticated: false });
@@ -695,16 +680,28 @@ app.get('/api/drive/folders', requireAuth, async (req: any, res) => {
   const users = getUsers();
   const user = users.find(u => u.id === req.userSession.userId);
   if (!user) {
-    res.status(401).json({ error: 'User session invalid.' });
+    res.status(401).json({ error: 'User session invalid.', needsReauth: true });
     return;
   }
 
   try {
-    const googleToken = await refreshAccessTokenIfNeeded(user);
-    const folders = await listFolders(googleToken);
-    res.json({ folders });
+    let googleToken = await refreshAccessTokenIfNeeded(user);
+    try {
+      const folders = await listFolders(googleToken);
+      res.json({ folders });
+    } catch (listErr: any) {
+      if (user.googleRefreshToken && (listErr.message.includes('expired') || listErr.message.includes('unauthorized') || listErr.message.includes('401'))) {
+        console.log('[Google Drive Folders]: Token expired during folder listing, attempting force refresh...');
+        googleToken = await refreshAccessTokenIfNeeded(user, true);
+        const folders = await listFolders(googleToken);
+        res.json({ folders });
+      } else {
+        throw listErr;
+      }
+    }
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const isAuthErr = err.message.includes('expired') || err.message.includes('unauthorized') || err.message.includes('401');
+    res.status(isAuthErr ? 401 : 500).json({ error: err.message, needsReauth: isAuthErr });
   }
 });
 
@@ -804,13 +801,25 @@ app.post('/api/drive/sync', requireAuth, async (req: any, res) => {
   const users = getUsers();
   const user = users.find(u => u.id === req.userSession.userId);
   if (!user) {
-    res.status(401).json({ error: 'User session invalid.' });
+    res.status(401).json({ error: 'User session invalid.', needsReauth: true });
     return;
   }
 
   try {
-    const googleToken = await refreshAccessTokenIfNeeded(user);
-    const result = await syncDriveFolder(googleToken, folderConfig.selectedFolderId);
+    let googleToken = await refreshAccessTokenIfNeeded(user);
+    let result: any;
+
+    try {
+      result = await syncDriveFolder(googleToken, folderConfig.selectedFolderId);
+    } catch (syncErr: any) {
+      if (user.googleRefreshToken && (syncErr.message.includes('expired') || syncErr.message.includes('unauthorized') || syncErr.message.includes('401'))) {
+        console.log('[Google Drive Sync]: Token expired during sync, attempting force refresh with refresh token...');
+        googleToken = await refreshAccessTokenIfNeeded(user, true);
+        result = await syncDriveFolder(googleToken, folderConfig.selectedFolderId);
+      } else {
+        throw syncErr;
+      }
+    }
     
     folderConfig.lastSyncedAt = Date.now();
     saveDriveFolderConfig(folderConfig);
@@ -820,7 +829,7 @@ app.post('/api/drive/sync', requireAuth, async (req: any, res) => {
     let healedCount = 0;
     for (const sch of schedules) {
       const cleanSchBase = sch.videoFileName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
-      const match = result.videos.find(v => {
+      const match = result.videos.find((v: any) => {
         const cleanVBase = v.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
         return v.name.toLowerCase() === sch.videoFileName.toLowerCase() ||
                v.id === sch.videoFileId ||
@@ -857,12 +866,13 @@ app.post('/api/drive/sync', requireAuth, async (req: any, res) => {
 
     res.json({ success: true, videos: result.videos, healedCount });
   } catch (err: any) {
+    const isAuthErr = err.message.includes('expired') || err.message.includes('unauthorized') || err.message.includes('401');
     addLog({
       action: 'SYNC_DRIVE',
       status: 'error',
       errorMessage: err.message
     });
-    res.status(500).json({ error: err.message });
+    res.status(isAuthErr ? 401 : 500).json({ error: err.message, needsReauth: isAuthErr });
   }
 });
 

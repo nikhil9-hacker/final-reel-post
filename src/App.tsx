@@ -90,25 +90,32 @@ async function apiFetch(input: RequestInfo | URL, init?: RequestInit, retries = 
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'calendar' | 'drive' | 'meta' | 'logs'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'calendar' | 'drive' | 'meta' | 'logs'>(() => {
+    const saved = localStorage.getItem('reelpilot_active_tab');
+    if (saved && ['dashboard', 'calendar', 'drive', 'meta', 'logs'].includes(saved)) {
+      return saved as any;
+    }
+    return 'dashboard';
+  });
   
-  // Auth & System State
+  // Auth & System State (strictly isolated per browser session)
   const [authLoading, setAuthLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<UserType | null>(null);
   const [googleAuthUrl, setGoogleAuthUrl] = useState<string>('');
 
-  // Gmail Custom Login Mock/OAuth step states
-  const [gmailEmail, setGmailEmail] = useState<string>('nkh9875@gmail.com');
-  const [gmailPassword, setGmailPassword] = useState<string>('••••••••');
+  // Gmail OAuth step states
+  const [gmailEmail, setGmailEmail] = useState<string>('');
+  const [gmailPassword, setGmailPassword] = useState<string>('');
   const [gmailStep, setGmailStep] = useState<1 | 2>(1);
   const [gmailError, setGmailError] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   
-  // Database States
+  // Database & Content States (Loaded freshly upon authenticated user session)
   const [metaConfig, setMetaConfig] = useState<MetaConfig | null>(null);
-  const [metaConfigured, setMetaConfigured] = useState(false);
+  const [metaConfigured, setMetaConfigured] = useState<boolean>(false);
   const [driveConfig, setDriveConfig] = useState<DriveFolderConfig | null>(null);
   const [folders, setFolders] = useState<any[]>([]);
+  const [manualFolderInput, setManualFolderInput] = useState<string>('');
   const [syncedVideos, setSyncedVideos] = useState<DriveVideoItem[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -190,6 +197,7 @@ export default function App() {
   const [isSavingGoogleOAuth, setIsSavingGoogleOAuth] = useState(false);
   const [googleTokenInfo, setGoogleTokenInfo] = useState<{ valid: boolean; email?: string; scopes?: string[]; hasDriveScope?: boolean; expiresIn?: number; error?: string } | null>(null);
   const [isCheckingTokenInfo, setIsCheckingTokenInfo] = useState(false);
+  const [driveAuthExpired, setDriveAuthExpired] = useState(false);
 
   // Load configuration and data on mount
   useEffect(() => {
@@ -209,12 +217,14 @@ export default function App() {
     // Setup Firebase AuthStateListener
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        setCurrentUser({
+        const u = {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
           name: firebaseUser.displayName || firebaseUser.email || 'User',
           picture: firebaseUser.photoURL || undefined
-        });
+        };
+        setCurrentUser(u);
+        localStorage.setItem('reelpilot_cached_user', JSON.stringify(u));
         setAuthLoading(false);
 
         // Ensure server session exists and is synced
@@ -310,12 +320,17 @@ export default function App() {
     loadGoogleScripts();
   }, []);
 
+  // On user authentication, load all dashboard data smoothly without overriding active tab
   useEffect(() => {
     if (currentUser) {
       loadAllData();
-      setActiveTab('drive'); // Auto redirect to Google Drive folder connection screen!
     }
   }, [currentUser]);
+
+  const handleTabChange = (tab: 'dashboard' | 'calendar' | 'drive' | 'meta' | 'logs') => {
+    setActiveTab(tab);
+    localStorage.setItem('reelpilot_active_tab', tab);
+  };
 
   // Periodic polling for schedules, logs, and stats updates
   useEffect(() => {
@@ -344,11 +359,25 @@ export default function App() {
           }
           setCurrentUser(data.user);
         } else {
+          // Strictly clear user and state if unauthenticated in this browser session
           setCurrentUser(null);
+          localStorage.removeItem('reelpilot_session_id');
+          localStorage.removeItem('reelpilot_cached_user');
+          setSyncedVideos([]);
+          setSchedules([]);
+          setLogs([]);
+          setDashboardStats(null);
+          setDriveConfig(null);
+          setMetaConfig(null);
+          setMetaConfigured(false);
         }
+      } else {
+        setCurrentUser(null);
+        localStorage.removeItem('reelpilot_session_id');
       }
     } catch (err) {
       console.warn('Could not verify server session:', err);
+      setCurrentUser(null);
     } finally {
       setAuthLoading(false);
     }
@@ -371,15 +400,17 @@ export default function App() {
   const loginWithGoogle = async (useRedirect = false) => {
     setAuthLoading(true);
     let targetAuthUrl = googleAuthUrl;
-    if (!targetAuthUrl) {
-      try {
-        const res = await apiFetch('/api/auth/google/url');
+    try {
+      const res = await apiFetch('/api/auth/google/url');
+      if (res.ok) {
         const data = await res.json();
-        targetAuthUrl = data.url;
-        setGoogleAuthUrl(data.url);
-      } catch (e) {
-        console.error('Failed to fetch fallback Google auth URL:', e);
+        if (data?.url) {
+          targetAuthUrl = data.url;
+          setGoogleAuthUrl(data.url);
+        }
       }
+    } catch (e) {
+      console.warn('Failed to fetch Google auth URL:', e);
     }
 
     if (useRedirect && targetAuthUrl) {
@@ -387,6 +418,28 @@ export default function App() {
       return;
     }
 
+    if (targetAuthUrl) {
+      const width = 600;
+      const height = 700;
+      const left = window.screen.width / 2 - width / 2;
+      const top = window.screen.height / 2 - height / 2;
+      const popup = window.open(
+        targetAuthUrl,
+        'google_oauth_popup',
+        `width=${width},height=${height},left=${left},top=${top},status=0,menubar=0,toolbar=0`
+      );
+
+      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        console.log('Popup blocked by browser, redirecting directly to Google Auth URL');
+        window.location.href = targetAuthUrl;
+      } else {
+        showNotification('info', 'Opening Google Sign-In popup window...');
+        setAuthLoading(false);
+      }
+      return;
+    }
+
+    // Fallback: Firebase popup
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const firebaseUser = result.user;
@@ -414,45 +467,24 @@ export default function App() {
         console.error('Failed to sync firebase login with server session:', e);
       }
 
-      setCurrentUser({
+      const u = {
         id: firebaseUser.uid,
         email: firebaseUser.email || '',
         name: firebaseUser.displayName || firebaseUser.email || 'User',
         picture: firebaseUser.photoURL || undefined
-      });
+      };
+      setCurrentUser(u);
+      setDriveAuthExpired(false);
+      localStorage.setItem('reelpilot_cached_user', JSON.stringify(u));
       showNotification('success', `Welcome back, ${firebaseUser.displayName || firebaseUser.email}!`);
       setAuthLoading(false);
     } catch (firebaseErr: any) {
-      console.warn('Firebase popup failed or unallowed domain, falling back to Google OAuth server flow:', firebaseErr);
-      
       if (firebaseErr?.code === 'auth/popup-closed-by-user') {
         showNotification('error', 'Sign-in cancelled by user.');
-        setAuthLoading(false);
-        return;
-      }
-
-      // Fallback: Open direct Google OAuth URL in a popup window or redirect if popup is blocked
-      if (targetAuthUrl) {
-        const width = 600;
-        const height = 700;
-        const left = window.screen.width / 2 - width / 2;
-        const top = window.screen.height / 2 - height / 2;
-        const popup = window.open(
-          targetAuthUrl,
-          'google_oauth_popup',
-          `width=${width},height=${height},left=${left},top=${top},status=0,menubar=0,toolbar=0`
-        );
-
-        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
-          console.log('Popup blocked by browser, redirecting directly to Google Auth URL');
-          window.location.href = targetAuthUrl;
-        } else {
-          showNotification('info', 'Opening Google Sign-In popup window...');
-        }
       } else {
         showNotification('error', firebaseErr?.message || 'Google sign in failed.');
-        setAuthLoading(false);
       }
+      setAuthLoading(false);
     }
   };
 
@@ -461,6 +493,13 @@ export default function App() {
       await signOut(auth);
       await apiFetch('/api/auth/logout', { method: 'POST' });
       localStorage.removeItem('reelpilot_session_id');
+      localStorage.removeItem('reelpilot_cached_user');
+      localStorage.removeItem('reelpilot_cached_schedules');
+      localStorage.removeItem('reelpilot_cached_videos');
+      localStorage.removeItem('reelpilot_cached_drive_config');
+      localStorage.removeItem('reelpilot_cached_meta_config');
+      localStorage.removeItem('reelpilot_cached_stats');
+      localStorage.removeItem('reelpilot_cached_logs');
       setCurrentUser(null);
       showNotification('success', 'Logged out successfully.');
     } catch (err) {
@@ -532,38 +571,48 @@ export default function App() {
   };
 
   const fetchMetaConfig = async () => {
-    const res = await apiFetch('/api/meta/config');
-    const data = await res.json();
-    setMetaConfigured(data.configured);
-    if (data.configured && data.config) {
-      setMetaConfig(data.config);
-      setMetaForm({
-        appId: data.config.appId,
-        appSecret: data.config.appSecret,
-        accessToken: data.config.accessToken,
-        instagramBusinessAccountId: data.config.instagramBusinessAccountId,
-        facebookPageId: data.config.facebookPageId,
-        graphApiVersion: data.config.graphApiVersion,
-        businessPortfolioId: data.config.businessPortfolioId || '',
-        webhookVerifyToken: data.config.webhookVerifyToken || '',
-        appMode: data.config.appMode,
-        environment: data.config.environment,
-        videoDeliveryMode: data.config.videoDeliveryMode || 'proxy'
-      });
+    try {
+      const res = await apiFetch('/api/meta/config');
+      const data = await res.json();
+      setMetaConfigured(data.configured);
+      if (data.configured && data.config) {
+        setMetaConfig(data.config);
+        localStorage.setItem('reelpilot_cached_meta_config', JSON.stringify(data.config));
+        setMetaForm({
+          appId: data.config.appId,
+          appSecret: data.config.appSecret,
+          accessToken: data.config.accessToken,
+          instagramBusinessAccountId: data.config.instagramBusinessAccountId,
+          facebookPageId: data.config.facebookPageId,
+          graphApiVersion: data.config.graphApiVersion,
+          businessPortfolioId: data.config.businessPortfolioId || '',
+          webhookVerifyToken: data.config.webhookVerifyToken || '',
+          appMode: data.config.appMode,
+          environment: data.config.environment,
+          videoDeliveryMode: data.config.videoDeliveryMode || 'proxy'
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to fetch meta config:', err);
     }
   };
 
   const fetchDriveConfig = async () => {
-    const res = await apiFetch('/api/drive/config');
-    const data = await res.json();
-    if (data.config) {
-      setDriveConfig(data.config);
-      setSelectedFolder(data.config.selectedFolderId);
-      // Fetch synced list
-      syncFolderFiles(false);
+    try {
+      const res = await apiFetch('/api/drive/config');
+      const data = await res.json();
+      if (data.config) {
+        setDriveConfig(data.config);
+        localStorage.setItem('reelpilot_cached_drive_config', JSON.stringify(data.config));
+        setSelectedFolder(data.config.selectedFolderId);
+        // Fetch synced list
+        syncFolderFiles(false);
+      }
+      // Load available folders
+      fetchGoogleFolders();
+    } catch (err) {
+      console.warn('Failed to fetch drive config:', err);
     }
-    // Load available folders
-    fetchGoogleFolders();
   };
 
   const fetchGoogleTokenInfo = async () => {
@@ -583,7 +632,7 @@ export default function App() {
     try {
       const res = await apiFetch('/api/drive/folders');
       const data = await res.json();
-      if (data.folders) {
+      if (data.folders && Array.isArray(data.folders)) {
         setFolders(data.folders);
       }
       fetchGoogleTokenInfo();
@@ -593,26 +642,41 @@ export default function App() {
   };
 
   const fetchSchedules = async () => {
-    const res = await apiFetch('/api/schedules');
-    const data = await res.json();
-    if (data.schedules) {
-      setSchedules(data.schedules);
+    try {
+      const res = await apiFetch('/api/schedules');
+      const data = await res.json();
+      if (data.schedules && Array.isArray(data.schedules)) {
+        setSchedules(data.schedules);
+        localStorage.setItem('reelpilot_cached_schedules', JSON.stringify(data.schedules));
+      }
+    } catch (err) {
+      console.warn('Failed to fetch schedules:', err);
     }
   };
 
   const fetchLogs = async () => {
-    const res = await apiFetch('/api/logs');
-    const data = await res.json();
-    if (data.logs) {
-      setLogs(data.logs);
+    try {
+      const res = await apiFetch('/api/logs');
+      const data = await res.json();
+      if (data.logs && Array.isArray(data.logs)) {
+        setLogs(data.logs);
+        localStorage.setItem('reelpilot_cached_logs', JSON.stringify(data.logs));
+      }
+    } catch (err) {
+      console.warn('Failed to fetch logs:', err);
     }
   };
 
   const fetchDashboardStats = async () => {
-    const res = await apiFetch('/api/dashboard/stats');
-    const data = await res.json();
-    if (!data.error) {
-      setDashboardStats(data);
+    try {
+      const res = await apiFetch('/api/dashboard/stats');
+      const data = await res.json();
+      if (data && !data.error) {
+        setDashboardStats(data);
+        localStorage.setItem('reelpilot_cached_stats', JSON.stringify(data));
+      }
+    } catch (err) {
+      console.warn('Failed to fetch dashboard stats:', err);
     }
   };
 
@@ -665,6 +729,22 @@ export default function App() {
   };
 
   // Google Drive Actions
+  const handleConnectManualFolder = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!manualFolderInput.trim()) {
+      showNotification('error', 'Please enter a Google Drive folder URL or ID.');
+      return;
+    }
+    let folderId = manualFolderInput.trim();
+    // Extract ID if URL was pasted
+    const match = folderId.match(/folders\/([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      folderId = match[1];
+    }
+    await connectDriveFolder(folderId, 'Selected Drive Folder');
+    setManualFolderInput('');
+  };
+
   const connectDriveFolder = async (folderId: string, folderName?: string) => {
     let name = folderName;
     if (!name) {
@@ -682,13 +762,16 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         showNotification('success', `Connected folder: ${name}`);
-        setDriveConfig({
+        const newDriveConfig = {
           selectedFolderId: folderId,
           selectedFolderName: name,
           lastSyncedAt: Date.now()
-        });
+        };
+        setDriveConfig(newDriveConfig);
+        localStorage.setItem('reelpilot_cached_drive_config', JSON.stringify(newDriveConfig));
         if (data.videos) {
           setSyncedVideos(data.videos);
+          localStorage.setItem('reelpilot_cached_videos', JSON.stringify(data.videos));
         }
         loadAllData();
       } else {
@@ -812,19 +895,25 @@ export default function App() {
       const res = await apiFetch('/api/drive/sync', { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
+        setDriveAuthExpired(false);
         let msg = `Synchronized ${data.videos?.length || 0} videos.`;
         if (data.healedCount && data.healedCount > 0) {
           msg += ` Auto-repaired ${data.healedCount} scheduled post(s)!`;
         }
         if (showToast) showNotification('success', msg);
-        setSyncedVideos(data.videos || []);
+        const videosList = data.videos || [];
+        setSyncedVideos(videosList);
+        localStorage.setItem('reelpilot_cached_videos', JSON.stringify(videosList));
         fetchSchedules();
         fetchLogs();
         fetchDashboardStats();
       } else {
+        if (res.status === 401 || data.needsReauth || data.error?.includes('expired') || data.error?.includes('unauthorized')) {
+          setDriveAuthExpired(true);
+        }
         if (showToast) showNotification('error', data.error || 'Failed to sync folder.');
       }
-    } catch (err) {
+    } catch (err: any) {
       if (showToast) showNotification('error', 'Sync failed.');
     } finally {
       setActionLoading(null);
@@ -1595,6 +1684,21 @@ export default function App() {
     });
   };
 
+  // Initial Session Verification Screen (prevents flash of login card if already authenticated)
+  if (authLoading && !currentUser) {
+    return (
+      <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col items-center justify-center p-6 relative" id="auth_verifying_screen">
+        <div className="w-14 h-14 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 mb-5 animate-pulse">
+          <Instagram className="w-7 h-7 text-white" />
+        </div>
+        <div className="flex items-center gap-2 text-zinc-400 text-xs font-mono">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-500" />
+          Verifying session...
+        </div>
+      </div>
+    );
+  }
+
   // Onboarding Layout if not authenticated (ReelPilot sign-in design)
   if (!currentUser) {
     return (
@@ -1759,7 +1863,7 @@ export default function App() {
           {/* Nav Items */}
           <nav className="space-y-1">
             <button
-              onClick={() => setActiveTab('dashboard')}
+              onClick={() => handleTabChange('dashboard')}
               className={`w-full py-2 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-colors duration-200 cursor-pointer ${
                 activeTab === 'dashboard' 
                   ? 'bg-zinc-900 text-white' 
@@ -1770,7 +1874,7 @@ export default function App() {
               Dashboard
             </button>
             <button
-              onClick={() => setActiveTab('calendar')}
+              onClick={() => handleTabChange('calendar')}
               className={`w-full py-2 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-colors duration-200 cursor-pointer ${
                 activeTab === 'calendar' 
                   ? 'bg-zinc-900 text-white' 
@@ -1781,7 +1885,7 @@ export default function App() {
               Calendar
             </button>
             <button
-              onClick={() => setActiveTab('drive')}
+              onClick={() => handleTabChange('drive')}
               className={`w-full py-2 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-colors duration-200 cursor-pointer ${
                 activeTab === 'drive' 
                   ? 'bg-zinc-900 text-white' 
@@ -1792,7 +1896,7 @@ export default function App() {
               Google Drive
             </button>
             <button
-              onClick={() => setActiveTab('meta')}
+              onClick={() => handleTabChange('meta')}
               className={`w-full py-2 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-colors duration-200 cursor-pointer ${
                 activeTab === 'meta' 
                   ? 'bg-zinc-900 text-white' 
@@ -1803,7 +1907,7 @@ export default function App() {
               Meta Settings
             </button>
             <button
-              onClick={() => setActiveTab('logs')}
+              onClick={() => handleTabChange('logs')}
               className={`w-full py-2 px-3 rounded-md flex items-center gap-3 text-sm font-medium transition-colors duration-200 cursor-pointer ${
                 activeTab === 'logs' 
                   ? 'bg-zinc-900 text-white' 
@@ -1920,16 +2024,16 @@ export default function App() {
                     <div className="flex gap-2">
                       {!driveConfig && (
                         <button
-                          onClick={() => setActiveTab('drive')}
-                          className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-semibold rounded-lg transition"
+                          onClick={() => handleTabChange('drive')}
+                          className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-semibold rounded-lg transition cursor-pointer"
                         >
                           Select Drive Folder
                         </button>
                       )}
                       {!metaConfigured && (
                         <button
-                          onClick={() => setActiveTab('meta')}
-                          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition"
+                          onClick={() => handleTabChange('meta')}
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
                         >
                           Configure Meta API
                         </button>
@@ -2469,6 +2573,28 @@ export default function App() {
                       </h3>
 
                       <div className="space-y-4">
+                        {driveAuthExpired && (
+                          <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
+                            <div className="flex items-start gap-2">
+                              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                              <div className="text-xs text-amber-200">
+                                <span className="font-semibold block mb-0.5">Google Drive Session Expired</span>
+                                <span className="text-[11px] text-zinc-400">
+                                  Your Google Drive authorization has expired or requires refreshed permissions.
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => loginWithGoogle(false)}
+                              disabled={authLoading}
+                              className="w-full py-2 px-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg transition duration-150 flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${authLoading ? 'animate-spin' : ''}`} />
+                              {authLoading ? 'Reconnecting...' : '⚡ Re-authenticate Google Drive'}
+                            </button>
+                          </div>
+                        )}
+
                         <p className="text-xs text-zinc-400 leading-relaxed">
                           Pilot reads files dynamically. Select the target folder inside your Google Drive. We'll scan and auto-pair matching video (e.g. <code>.mp4</code>) and caption (<code>.txt</code>) file couples.
                         </p>
@@ -2526,7 +2652,7 @@ export default function App() {
                           )}
                         </div>
 
-                        <div className="pt-2">
+                        <div className="pt-2 space-y-3">
                           <button
                             onClick={openGooglePicker}
                             disabled={actionLoading === 'opening_picker'}
@@ -2535,6 +2661,29 @@ export default function App() {
                             <Sparkles className="w-4 h-4 text-blue-200 shrink-0" />
                             {actionLoading === 'opening_picker' ? 'Opening Picker...' : 'Browse with Google Picker'}
                           </button>
+
+                          {/* Quick Connect by Folder Link or ID */}
+                          <form onSubmit={handleConnectManualFolder} className="p-3 bg-zinc-950/50 border border-zinc-800/80 rounded-xl space-y-2">
+                            <label className="block text-[10px] font-mono uppercase text-zinc-400 font-bold">
+                              Or Paste Drive Folder Link / ID
+                            </label>
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                value={manualFolderInput}
+                                onChange={(e) => setManualFolderInput(e.target.value)}
+                                placeholder="https://drive.google.com/drive/folders/... or Folder ID"
+                                className="flex-1 px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                              />
+                              <button
+                                type="submit"
+                                disabled={!manualFolderInput.trim() || actionLoading === 'connect_folder'}
+                                className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition shrink-0 cursor-pointer"
+                              >
+                                Connect
+                              </button>
+                            </div>
+                          </form>
                         </div>
 
                         <div>
